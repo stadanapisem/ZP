@@ -16,9 +16,13 @@ import java.security.Principal;
 import java.security.PrivateKey;
 import java.security.SecureRandom;
 import java.security.Security;
+import java.security.cert.CertPath;
 import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
+import java.security.cert.TrustAnchor;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.List;
 import javax.security.auth.x500.X500Principal;
@@ -33,6 +37,7 @@ import org.bouncycastle.cms.CMSSignedDataGenerator;
 import org.bouncycastle.cms.CMSTypedData;
 import org.bouncycastle.cms.jcajce.JcaSignerInfoGeneratorBuilder;
 import org.bouncycastle.crypto.signers.ECDSASigner;
+import org.bouncycastle.crypto.util.PrivateKeyFactory;
 import org.bouncycastle.jce.ECNamedCurveTable;
 import org.bouncycastle.jce.X509Principal;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
@@ -116,6 +121,18 @@ public class MyCode extends x509.v3.CodeV3 {
         createLocalKeystore(file);
     }
 
+    private boolean checkValidity(X509Certificate cert) {
+        try {
+            if(cert.getIssuerDN().toString().startsWith("CN=ETFrootCA")) {
+                return true;
+            }
+        } catch(Exception e) {
+            e.printStackTrace();
+        }
+        
+        return false;
+    }
+    
     @Override
     public int loadKeypair(String alias) {
         try {
@@ -125,17 +142,23 @@ public class MyCode extends x509.v3.CodeV3 {
                 this.access.setNotBefore(cert.getNotBefore());
                 this.access.setSerialNumber(cert.getSerialNumber().toString());
                 this.access.setVersion(2);
-                this.access.setPublicKeySignatureAlgorithm(cert.getSigAlgName());
-
+                this.access.setSubjectSignatureAlgorithm(cert.getSigAlgName());
+                
                 Principal data = cert.getSubjectDN();
                 this.access.setSubjectCountry(data.toString());
-
-                return 1;
+                this.access.setIssuer(cert.getIssuerDN().toString());
+                this.access.setIssuerSignatureAlgorithm(cert.getIssuerX500Principal().toString());
+                System.out.println(cert.getIssuerX500Principal().toString());
+                
+                if(!cert.getIssuerDN().toString().equals("CN=localhost")) {
+                    return checkValidity(cert) == true ? 2 : 1;
+                } else
+                    return 0;
             }
-            return 0;
+            return -1;
         } catch (Exception e) {
             e.printStackTrace();
-            return 0;
+            return -1;
         }
     }
 
@@ -241,26 +264,27 @@ public class MyCode extends x509.v3.CodeV3 {
     }
 
     @Override
-    public boolean signCertificate(String name, String string1) {
+    public boolean signCertificate(String name, String algorithm) {
         try {
             if (keyStore.containsAlias(name) && keyStore.containsAlias(aliasToSign)) {
                 //System.out.println(req.getSignature());
                 PrivateKey pkey = (PrivateKey) keyStore.getKey(name, null);
 
                 X509Certificate cert = (X509Certificate) keyStore.getCertificateChain(name)[0];
-                AlgorithmIdentifier sigAlg = req.getSignatureAlgorithm();
+                AlgorithmIdentifier sigAlg = new DefaultSignatureAlgorithmIdentifierFinder().find(algorithm);
                 AlgorithmIdentifier digAlg = new DefaultDigestAlgorithmIdentifierFinder().find(sigAlg);
                 X500Name issuer = new X500Name(cert.getSubjectX500Principal().getName());
                 BigInteger serial = new BigInteger(32, new SecureRandom());
                 X509v3CertificateBuilder certgen = new X509v3CertificateBuilder(issuer, serial, cert.getNotBefore(),
                         cert.getNotAfter(), req.getSubject(), req.getSubjectPublicKeyInfo());
 
-                ContentSigner signer = (ContentSigner) new BcECContentSignerBuilder(digAlg, digAlg);
+                ContentSigner signer = new BcRSAContentSignerBuilder(digAlg, digAlg).build(PrivateKeyFactory.createKey(pkey.getEncoded()));
+                
                 X509CertificateHolder certHolder = certgen.build(signer);
                 byte[] certEncode = certHolder.toASN1Structure().getEncoded();
 
                 CMSSignedDataGenerator generator = new CMSSignedDataGenerator();
-                signer = new JcaContentSignerBuilder(req.getSignatureAlgorithm().toString()).build(pkey);
+                signer = new JcaContentSignerBuilder(algorithm).build(pkey);
                 generator.addSignerInfoGenerator(new JcaSignerInfoGeneratorBuilder(new JcaDigestCalculatorProviderBuilder().build()).build(signer, cert));
                 generator.addCertificate(new X509CertificateHolder(certEncode));
                 generator.addCertificate(new X509CertificateHolder(cert.getEncoded()));
@@ -273,7 +297,7 @@ public class MyCode extends x509.v3.CodeV3 {
                 out.write(Base64.encode(signeddata.getEncoded()));
                 out.write("\n-----END PKCS #7 SIGNED DATA-----\n".getBytes("ISO-8859-1"));
                 out.close();
-
+                System.out.println(new String(out.toByteArray(), "ISO-8859-1"));
                 return true;
             }
         } catch (Exception e) {
@@ -313,8 +337,7 @@ public class MyCode extends x509.v3.CodeV3 {
         try {
             if (keyStore.containsAlias(issuer)) {
                 X509Certificate cert = (X509Certificate) keyStore.getCertificateChain(issuer)[0];
-                //System.out.println(cert.getSigAlgName());
-                return cert.getSigAlgName();
+                return keyStore.getKey(issuer, null).getAlgorithm();
             }
 
         } catch (Exception e) {
@@ -326,8 +349,21 @@ public class MyCode extends x509.v3.CodeV3 {
     }
 
     @Override
-    public int getRSAKeyLength(String string) {
-        throw new UnsupportedOperationException("Not supported yet.");
+    public int getRSAKeyLength(String issuer) {
+        try {
+            if (keyStore.containsAlias(issuer)) {
+                X509Certificate cert = (X509Certificate) keyStore.getCertificateChain(issuer)[0];
+                //System.out.println(cert.getSigAlgName());
+                
+                return cert.getSignature().length;
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return -1;
+        }
+
+        return -1;
     }
 
     @Override
