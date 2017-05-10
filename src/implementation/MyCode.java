@@ -19,16 +19,30 @@ import java.security.Security;
 import java.security.cert.CertPath;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
+import java.security.cert.Extension;
 import java.security.cert.TrustAnchor;
 import java.security.cert.X509Certificate;
+import java.security.cert.X509Extension;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.List;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
 import javax.security.auth.x500.X500Principal;
+import org.bouncycastle.asn1.ASN1Boolean;
+import org.bouncycastle.asn1.ASN1ObjectIdentifier;
+import org.bouncycastle.asn1.DEREncodableVector;
+import org.bouncycastle.asn1.DEROctetString;
 import org.bouncycastle.asn1.pkcs.CertificationRequest;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x509.AlgorithmIdentifier;
+import org.bouncycastle.asn1.x509.Extensions;
+import org.bouncycastle.asn1.x509.ExtensionsGenerator;
+import org.bouncycastle.asn1.x509.GeneralName;
+import org.bouncycastle.asn1.x509.GeneralNames;
+import org.bouncycastle.asn1.x509.GeneralNamesBuilder;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.X509v3CertificateBuilder;
 import org.bouncycastle.cms.CMSProcessableByteArray;
@@ -53,6 +67,7 @@ import org.bouncycastle.x509.X509V3CertificateGenerator;
 import org.bouncycastle.pkcs.*;
 import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder;
 import org.bouncycastle.util.encoders.Base64;
+import org.bouncycastle.asn1.x509.*;
 
 /**
  *
@@ -123,37 +138,86 @@ public class MyCode extends x509.v3.CodeV3 {
 
     private boolean checkValidity(X509Certificate cert) {
         try {
-            if(cert.getIssuerDN().toString().startsWith("CN=ETFrootCA")) {
+            /*if(cert.getIssuerDN().toString().startsWith("CN=ETFrootCA")) {
                 return true;
+            }*/
+            Enumeration<String> aliases = keyStore.aliases();
+            while (aliases.hasMoreElements()) {
+                Certificate c = keyStore.getCertificate(aliases.nextElement());
+                try {
+                    if (cert != c) {
+                        cert.verify(c.getPublicKey());
+                        return true;
+                    }
+                } catch (Exception e) {
+//                    e.printStackTrace();
+                }
+
             }
-        } catch(Exception e) {
+        } catch (Exception e) {
             e.printStackTrace();
         }
-        
+
         return false;
     }
-    
+
+    private boolean isSigned(X509Certificate cert) {
+        try {
+            if (cert.getKeyUsage() != null) {
+                return cert.getKeyUsage()[5];
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        return false;
+    }
+
     @Override
     public int loadKeypair(String alias) {
         try {
             if (keyStore.containsAlias(alias)) {
-                X509Certificate cert = (X509Certificate) keyStore.getCertificate(alias);
+                X509Certificate cert = (X509Certificate) keyStore.getCertificateChain(alias)[0];
                 this.access.setNotAfter(cert.getNotAfter());
                 this.access.setNotBefore(cert.getNotBefore());
                 this.access.setSerialNumber(cert.getSerialNumber().toString());
                 this.access.setVersion(2);
                 this.access.setSubjectSignatureAlgorithm(cert.getSigAlgName());
-                
+
                 Principal data = cert.getSubjectDN();
-                this.access.setSubjectCountry(data.toString());
+                String subjectArray[] = data.toString().split(",");
+
+                if (subjectArray[0].length() > 3) {
+                    this.access.setSubjectCommonName(subjectArray[0].trim().split("=")[1]);
+                }
+                if (subjectArray[1].length() > 4) {
+                    this.access.setSubjectOrganizationUnit(subjectArray[1].trim().split("=")[1]);
+                }
+                if (subjectArray[2].length() > 3) {
+                    this.access.setSubjectOrganization(subjectArray[2].trim().split("=")[1]);
+                }
+                if (subjectArray[3].length() > 4) {
+                    this.access.setSubjectLocality(subjectArray[3].trim().split("=")[1]);
+                }
+                if (subjectArray[4].length() > 4) {
+                    this.access.setSubjectState(subjectArray[4].trim().split("=")[1]);
+                }
+                if (subjectArray[5].length() > 3) {
+                    this.access.setSubjectCountry(subjectArray[5].trim().split("=")[1]);
+                }
+
+                //  this.access.setSubjectCountry(data.toString());
                 this.access.setIssuer(cert.getIssuerDN().toString());
-                this.access.setIssuerSignatureAlgorithm(cert.getIssuerX500Principal().toString());
-                System.out.println(cert.getIssuerX500Principal().toString());
-                
-                if(!cert.getIssuerDN().toString().equals("CN=localhost")) {
+                if (cert.getIssuerUniqueID() != null) {
+                    this.access.setIssuerUniqueIdentifier(cert.getIssuerUniqueID().toString());
+                }
+
+                //System.out.println(cert.getIssuerX500Principal().toString());
+                if (isSigned(cert)) {
                     return checkValidity(cert) == true ? 2 : 1;
-                } else
+                } else {
                     return 0;
+                }
             }
             return -1;
         } catch (Exception e) {
@@ -177,6 +241,48 @@ public class MyCode extends x509.v3.CodeV3 {
             cert.setNotBefore(this.access.getNotBefore());
             cert.setPublicKey(keys.getPublic());
 
+//            cert.addExtension(X509Extensions.IssuerAlternativeName, this.access.isCritical(1), Arrays.toString(this.access.getAlternativeName(2)).getBytes());
+            //ExtensionsGenerator gen = new ExtensionsGenerator();
+            
+            //gen.addExtension(X509Extensions.IssuerAlternativeName, this.access.isCritical(1), new IssuerAlternativeNameExtension(this.access.getAlternativeName(0)));
+            //cert.addExtension(X509Extensions.CertificatePolicies, this.access.isCritical(0), new CertificatePolicies(new PolicyInformation(new ASN1ObjectIdentifier(this.access.getCpsUri()))));
+            
+            //cert.addExtension(X509Extensions.InhibitAnyPolicy, this.access.isCritical(2), "".getBytes());
+            
+            GeneralNamesBuilder gnbuilder = new GeneralNamesBuilder();
+            
+            for(String s : this.access.getAlternativeName(6)) { // For some reason it returns something only on 6
+                String[] tmp = s.trim().split(":");
+                switch(tmp[0]) {
+                    case "DNS":
+                        gnbuilder.addName(new GeneralName(GeneralName.dNSName, tmp[1]));
+                        break;
+                    case "email":
+                        gnbuilder.addName(new GeneralName(GeneralName.rfc822Name, tmp[1]));
+                        break;
+                    case "URI":
+                        gnbuilder.addName(new GeneralName(GeneralName.uniformResourceIdentifier, tmp[1]));
+                        break;
+                    case "IP":
+                        gnbuilder.addName(new GeneralName(GeneralName.iPAddress, tmp[1]));
+                        break;
+                    case "RID":
+                        gnbuilder.addName(new GeneralName(GeneralName.registeredID, tmp[1]));
+                        break;
+                    case "DIR":
+                        gnbuilder.addName(new GeneralName(GeneralName.directoryName, tmp[1]));
+                        break;
+                    default:
+                        gnbuilder.addName(new GeneralName(GeneralName.otherName, tmp[1]));
+                }
+            }
+            GeneralNames names = gnbuilder.build();
+            cert.addExtension(org.bouncycastle.asn1.x509.Extension.issuerAlternativeName, this.access.isCritical(1), names.getEncoded());
+            
+            
+            
+            System.out.println(this.access.isCritical(0));
+            System.out.println(this.access.getCpsUri());
             // TODO Add the extra parameters
             return cert.generate(keys.getPrivate(), "BC");
         } catch (Exception e) {
@@ -279,7 +385,7 @@ public class MyCode extends x509.v3.CodeV3 {
                         cert.getNotAfter(), req.getSubject(), req.getSubjectPublicKeyInfo());
 
                 ContentSigner signer = new BcRSAContentSignerBuilder(digAlg, digAlg).build(PrivateKeyFactory.createKey(pkey.getEncoded()));
-                
+
                 X509CertificateHolder certHolder = certgen.build(signer);
                 byte[] certEncode = certHolder.toASN1Structure().getEncoded();
 
@@ -353,8 +459,6 @@ public class MyCode extends x509.v3.CodeV3 {
         try {
             if (keyStore.containsAlias(issuer)) {
                 X509Certificate cert = (X509Certificate) keyStore.getCertificateChain(issuer)[0];
-                //System.out.println(cert.getSigAlgName());
-                
                 return cert.getSignature().length;
             }
 
@@ -367,7 +471,7 @@ public class MyCode extends x509.v3.CodeV3 {
     }
 
     @Override
-    public List<String> getIssuers(String alias) {
+    public List<String> getIssuers(String alias) { // TODO get ones which can sign a certificate
         try {
             Enumeration e = keyStore.aliases();
             List<String> list = new ArrayList<>();
