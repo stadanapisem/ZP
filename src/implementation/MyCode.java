@@ -31,12 +31,21 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
 import javax.security.auth.x500.X500Principal;
-import org.bouncycastle.asn1.ASN1Boolean;
+import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1EncodableVector;
 import org.bouncycastle.asn1.ASN1ObjectIdentifier;
+import org.bouncycastle.asn1.ASN1OctetString;
+import org.bouncycastle.asn1.ASN1Sequence;
 import org.bouncycastle.asn1.DEREncodableVector;
+import org.bouncycastle.asn1.DERIA5String;
+import org.bouncycastle.asn1.DERInteger;
+import org.bouncycastle.asn1.DERObjectIdentifier;
 import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.DERSequence;
 import org.bouncycastle.asn1.pkcs.CertificationRequest;
 import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x500.X500NameBuilder;
+import org.bouncycastle.asn1.x500.style.BCStyle;
 import org.bouncycastle.asn1.x509.AlgorithmIdentifier;
 import org.bouncycastle.asn1.x509.Extensions;
 import org.bouncycastle.asn1.x509.ExtensionsGenerator;
@@ -68,6 +77,8 @@ import org.bouncycastle.pkcs.*;
 import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder;
 import org.bouncycastle.util.encoders.Base64;
 import org.bouncycastle.asn1.x509.*;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import sun.security.x509.InhibitAnyPolicyExtension;
 
 /**
  *
@@ -76,7 +87,7 @@ import org.bouncycastle.asn1.x509.*;
 public class MyCode extends x509.v3.CodeV3 {
 
     private KeyStore keyStore;
-    private static String keyStorePath = "/home/mm/Desktop/keystore.jks";
+    private static String keyStorePath = "/home/mm/Desktop/keystore.p12";
     private static String keyStorePassword = "password";
     private String aliasToSign;
     private PKCS10CertificationRequest req = null;
@@ -87,8 +98,6 @@ public class MyCode extends x509.v3.CodeV3 {
         if (Security.getProvider("BC") == null) {
             throw new Error();
         }
-
-        this.access.setVersion(2);
     }
 
     @Override
@@ -133,6 +142,7 @@ public class MyCode extends x509.v3.CodeV3 {
     @Override
     public void resetLocalKeystore() {
         File file = new File(keyStorePath);
+        file.delete();
         createLocalKeystore(file);
     }
 
@@ -227,7 +237,7 @@ public class MyCode extends x509.v3.CodeV3 {
     }
 
     private X509Certificate generateCertificate(KeyPair keys) {
-        try {
+        /*try {
 
             X509V3CertificateGenerator cert = new X509V3CertificateGenerator();
             cert.setSerialNumber(new BigInteger(this.access.getSerialNumber()));
@@ -276,19 +286,64 @@ public class MyCode extends x509.v3.CodeV3 {
                         gnbuilder.addName(new GeneralName(GeneralName.otherName, tmp[1]));
                 }
             }
-            GeneralNames names = gnbuilder.build();
-            cert.addExtension(org.bouncycastle.asn1.x509.Extension.issuerAlternativeName, this.access.isCritical(1), names.getEncoded());
             
+            /*for(int i = 0; i < 15; i++)     //   3 = Certificate policies; 6 = Issuer Alternative Name 13 = Inhibit any Policy; The joy of no documentation :D
+                System.out.println(this.access.isCritical(i));*/
+
+ /* GeneralNames names = gnbuilder.build();
+            if(this.access.getAlternativeName(6).length > 0)
+                cert.addExtension(org.bouncycastle.asn1.x509.Extension.issuerAlternativeName, this.access.isCritical(6), names.getEncoded());
             
-            
-            System.out.println(this.access.isCritical(0));
-            System.out.println(this.access.getCpsUri());
-            // TODO Add the extra parameters
+            //cert.addExtension(org.bouncycastle.asn1.x509.Extension.certificatePolicies, this.access.isCritical(3), new GeneralName(GeneralName.uniformResourceIdentifier, this.access.getCpsUri()).getEncoded());
+            ASN1EncodableVector vect = new ASN1EncodableVector();
+            //vect.add(new GeneralName(GeneralName.uniformResourceIdentifier, new DERIA5String(this.access.getCpsUri())));
+            //cert.addExtension(org.bouncycastle.asn1.x509.Extension.certificatePolicies, this.access.isCritical(3), 
+            //        new CertificatePolicies(new PolicyInformation(new ASN1ObjectIdentifier("2.5.29.32"), new )));
+            Extension e = new InhibitAnyPolicyExtension(this.access.getInhibitAnyPolicy(), this.access.getSkipCerts());
+            cert.addExtension(X509Extensions.InhibitAnyPolicy, this.access.isCritical(13), new DEROctetString(new org.boun)));
+           
             return cert.generate(keys.getPrivate(), "BC");
         } catch (Exception e) {
             e.printStackTrace();
             return null;
+        }*/
+        try {
+            X500NameBuilder nameBuilder = new X500NameBuilder(X500Name.getDefaultStyle());
+            nameBuilder.addRDN(BCStyle.C, this.access.getSubjectCountry());
+            nameBuilder.addRDN(BCStyle.CN, this.access.getSubjectCommonName());
+            nameBuilder.addRDN(BCStyle.OU, this.access.getSubjectOrganizationUnit());
+            nameBuilder.addRDN(BCStyle.O, this.access.getSubjectOrganization());
+            nameBuilder.addRDN(BCStyle.L, this.access.getSubjectLocality());
+            nameBuilder.addRDN(BCStyle.ST, this.access.getSubjectState());
+
+            X509v3CertificateBuilder certBuilder = new X509v3CertificateBuilder(nameBuilder.build(),
+                    new BigInteger(this.access.getSerialNumber()), this.access.getNotBefore(), this.access.getNotAfter(),
+                    nameBuilder.build(), SubjectPublicKeyInfo.getInstance(ASN1Sequence.getInstance(keys.getPublic().getEncoded())));
+
+            System.out.println(this.access.getSkipCerts());
+            if (!this.access.getSkipCerts().equals("")) {
+                certBuilder.addExtension(new org.bouncycastle.asn1.x509.Extension(org.bouncycastle.asn1.x509.Extension.inhibitAnyPolicy, this.access.isCritical(13),
+                        new DERInteger(new BigInteger(this.access.getSkipCerts())).getEncoded()));
+            }
+            System.out.println(this.access.getAnyPolicy());
+            
+            //PolicyInformation pi = new PolicyInformation(new ASN1ObjectIdentifier("1.3.6.1.4.1.1466.115.121.1.26")); // onaj string 
+            PolicyInformation[] pi = new PolicyInformation[1];
+            PolicyQualifierInfo piq = new PolicyQualifierInfo(this.access.getCpsUri());
+            //pi[0] = new PolicyInformation(new ASN1ObjectIdentifier("1.3.6.1.4.1.1466.115.121.1.26"), new DERSequence(new PolicyQualifierInfo(this.access.getCpsUri())));
+            
+            certBuilder.addExtension(new org.bouncycastle.asn1.x509.Extension(org.bouncycastle.asn1.x509.Extension.certificatePolicies, this.access.isCritical(3),
+                    new CertificatePolicies(pi).getEncoded()));
+
+            //X509CertificateHolder certHolder = certBuilder.build(null)
+            System.out.println(this.access.getPublicKeySignatureAlgorithm());
+            return new JcaX509CertificateConverter().setProvider("BC").getCertificate(certBuilder.build(new JcaContentSignerBuilder(this.access.getPublicKeySignatureAlgorithm()).setProvider("BC")
+                    .build(keys.getPrivate())));
+        } catch (Exception e) {
+            e.printStackTrace();
         }
+
+        return null;
     }
 
     @Override
