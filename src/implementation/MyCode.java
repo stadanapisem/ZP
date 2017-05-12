@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.Set;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
@@ -196,7 +197,7 @@ public class MyCode extends x509.v3.CodeV3 {
 
                 Principal data = cert.getSubjectDN();
                 String subjectArray[] = data.toString().split(",");
-
+/// NEEDS COMPLETE REWORK
                 if (subjectArray[0].length() > 3) {
                     this.access.setSubjectCommonName(subjectArray[0].trim().split("=")[1]);
                 }
@@ -206,7 +207,7 @@ public class MyCode extends x509.v3.CodeV3 {
                 if (subjectArray[2].length() > 3) {
                     this.access.setSubjectOrganization(subjectArray[2].trim().split("=")[1]);
                 }
-                if (subjectArray[3].length() > 4) {
+                if (subjectArray[3].length() > 3) {
                     this.access.setSubjectLocality(subjectArray[3].trim().split("=")[1]);
                 }
                 if (subjectArray[4].length() > 4) {
@@ -215,11 +216,43 @@ public class MyCode extends x509.v3.CodeV3 {
                 if (subjectArray[5].length() > 3) {
                     this.access.setSubjectCountry(subjectArray[5].trim().split("=")[1]);
                 }
-
+/// THIS PART
                 //  this.access.setSubjectCountry(data.toString());
                 this.access.setIssuer(cert.getIssuerDN().toString());
                 if (cert.getIssuerUniqueID() != null) {
                     this.access.setIssuerUniqueIdentifier(cert.getIssuerUniqueID().toString());
+                }
+
+                Set<String> critical = cert.getCriticalExtensionOIDs();
+
+                // System.out.println(new String(cert.getExtensionValue("2.5.29.54")));
+                if (cert.getExtensionValue("2.5.29.18") != null) {
+                    byte[] tmp = cert.getExtensionValue("2.5.29.18");
+                    this.access.setAlternativeName(6, new String(tmp, 6, tmp.length - 6)); // Surmised from precise measurements
+                    this.access.setCritical(6, critical.contains("2.5.29.18"));
+                }
+
+                if (cert.getExtensionValue("2.5.29.54") != null) {
+                    /*for(byte b : cert.getExtensionValue("2.5.29.54"))
+                        System.out.println(b);*/
+                    int tmp = cert.getExtensionValue("2.5.29.54")[4];
+                    this.access.setSkipCerts(Integer.toString(tmp));
+                    this.access.setCritical(13, critical.contains("2.5.29.54"));
+                }
+
+                if (cert.getExtensionValue("2.5.29.32") != null) {
+                    //this.access.setAnyPolicy(true);
+                    byte[] tmp = cert.getExtensionValue("2.5.29.32");
+                    // 9 = 29 and 10 = 32 and 11 = 0 
+                    // starting since 35
+                    // magic constants ;D
+                    if (tmp.length > 12) {
+                        this.access.setCpsUri(new String(tmp, 35, tmp.length - 35));
+                    } else if (tmp[9] == 29 && tmp[10] == 32 && tmp[11] == 0) {
+                        this.access.setAnyPolicy(true);
+                    }
+
+                    this.access.setCritical(3, critical.contains("2.5.29.32"));
                 }
 
                 //System.out.println(cert.getIssuerX500Principal().toString());
@@ -237,7 +270,7 @@ public class MyCode extends x509.v3.CodeV3 {
     }
 
     private X509Certificate generateCertificate(KeyPair keys) {
-        /*try {
+        try {
 
             X509V3CertificateGenerator cert = new X509V3CertificateGenerator();
             cert.setSerialNumber(new BigInteger(this.access.getSerialNumber()));
@@ -253,17 +286,14 @@ public class MyCode extends x509.v3.CodeV3 {
 
 //            cert.addExtension(X509Extensions.IssuerAlternativeName, this.access.isCritical(1), Arrays.toString(this.access.getAlternativeName(2)).getBytes());
             //ExtensionsGenerator gen = new ExtensionsGenerator();
-            
             //gen.addExtension(X509Extensions.IssuerAlternativeName, this.access.isCritical(1), new IssuerAlternativeNameExtension(this.access.getAlternativeName(0)));
             //cert.addExtension(X509Extensions.CertificatePolicies, this.access.isCritical(0), new CertificatePolicies(new PolicyInformation(new ASN1ObjectIdentifier(this.access.getCpsUri()))));
-            
             //cert.addExtension(X509Extensions.InhibitAnyPolicy, this.access.isCritical(2), "".getBytes());
-            
             GeneralNamesBuilder gnbuilder = new GeneralNamesBuilder();
-            
-            for(String s : this.access.getAlternativeName(6)) { // For some reason it returns something only on 6
+
+            for (String s : this.access.getAlternativeName(6)) { // For some reason it returns something only on 6
                 String[] tmp = s.trim().split(":");
-                switch(tmp[0]) {
+                switch (tmp[0]) {
                     case "DNS":
                         gnbuilder.addName(new GeneralName(GeneralName.dNSName, tmp[1]));
                         break;
@@ -286,28 +316,32 @@ public class MyCode extends x509.v3.CodeV3 {
                         gnbuilder.addName(new GeneralName(GeneralName.otherName, tmp[1]));
                 }
             }
-            
+
             /*for(int i = 0; i < 15; i++)     //   3 = Certificate policies; 6 = Issuer Alternative Name 13 = Inhibit any Policy; The joy of no documentation :D
                 System.out.println(this.access.isCritical(i));*/
-
- /* GeneralNames names = gnbuilder.build();
-            if(this.access.getAlternativeName(6).length > 0)
+            GeneralNames names = gnbuilder.build();
+            if (this.access.getAlternativeName(6).length > 0) {
                 cert.addExtension(org.bouncycastle.asn1.x509.Extension.issuerAlternativeName, this.access.isCritical(6), names.getEncoded());
-            
-            //cert.addExtension(org.bouncycastle.asn1.x509.Extension.certificatePolicies, this.access.isCritical(3), new GeneralName(GeneralName.uniformResourceIdentifier, this.access.getCpsUri()).getEncoded());
-            ASN1EncodableVector vect = new ASN1EncodableVector();
-            //vect.add(new GeneralName(GeneralName.uniformResourceIdentifier, new DERIA5String(this.access.getCpsUri())));
-            //cert.addExtension(org.bouncycastle.asn1.x509.Extension.certificatePolicies, this.access.isCritical(3), 
-            //        new CertificatePolicies(new PolicyInformation(new ASN1ObjectIdentifier("2.5.29.32"), new )));
-            Extension e = new InhibitAnyPolicyExtension(this.access.getInhibitAnyPolicy(), this.access.getSkipCerts());
-            cert.addExtension(X509Extensions.InhibitAnyPolicy, this.access.isCritical(13), new DEROctetString(new org.boun)));
-           
+            }
+
+            if (!this.access.getSkipCerts().equals("")) {
+                cert.addExtension(org.bouncycastle.asn1.x509.Extension.inhibitAnyPolicy, this.access.isCritical(13), // Should always be true in inhibit any policy
+                        new DERInteger(new BigInteger(this.access.getSkipCerts())).getEncoded());
+            }
+
+            if (this.access.getAnyPolicy()) {
+                PolicyInformation pi = new PolicyInformation(new ASN1ObjectIdentifier("1.3.6.1.4.1.1466.115.121.1.26"), new DERSequence(new PolicyQualifierInfo(this.access.getCpsUri())));
+                cert.addExtension(org.bouncycastle.asn1.x509.Extension.certificatePolicies, this.access.isCritical(3), new CertificatePolicies(pi).getEncoded());
+            } else {
+                cert.addExtension(org.bouncycastle.asn1.x509.Extension.certificatePolicies, this.access.isCritical(3), new CertificatePolicies(new PolicyInformation(new ASN1ObjectIdentifier("2.5.29.32.0"))).getEncoded());
+            }
+
             return cert.generate(keys.getPrivate(), "BC");
         } catch (Exception e) {
             e.printStackTrace();
             return null;
-        }*/
-        try {
+        }
+        /*try {
             X500NameBuilder nameBuilder = new X500NameBuilder(X500Name.getDefaultStyle());
             nameBuilder.addRDN(BCStyle.C, this.access.getSubjectCountry());
             nameBuilder.addRDN(BCStyle.CN, this.access.getSubjectCommonName());
@@ -342,8 +376,7 @@ public class MyCode extends x509.v3.CodeV3 {
         } catch (Exception e) {
             e.printStackTrace();
         }
-
-        return null;
+         */
     }
 
     @Override
@@ -442,7 +475,9 @@ public class MyCode extends x509.v3.CodeV3 {
                 ContentSigner signer = new BcRSAContentSignerBuilder(digAlg, digAlg).build(PrivateKeyFactory.createKey(pkey.getEncoded()));
 
                 X509CertificateHolder certHolder = certgen.build(signer);
-                byte[] certEncode = certHolder.toASN1Structure().getEncoded();
+//                keyStore.deleteEntry(aliasToSign);
+                keyStore.setCertificateEntry(aliasToSign, new JcaX509CertificateConverter().setProvider("BC").getCertificate(certHolder));
+                /*byte[] certEncode = certHolder.toASN1Structure().getEncoded();
 
                 CMSSignedDataGenerator generator = new CMSSignedDataGenerator();
                 signer = new JcaContentSignerBuilder(algorithm).build(pkey);
@@ -458,7 +493,7 @@ public class MyCode extends x509.v3.CodeV3 {
                 out.write(Base64.encode(signeddata.getEncoded()));
                 out.write("\n-----END PKCS #7 SIGNED DATA-----\n".getBytes("ISO-8859-1"));
                 out.close();
-                System.out.println(new String(out.toByteArray(), "ISO-8859-1"));
+                System.out.println(new String(out.toByteArray(), "ISO-8859-1"));*/
                 return true;
             }
         } catch (Exception e) {
