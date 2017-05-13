@@ -32,6 +32,7 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
 import javax.security.auth.x500.X500Principal;
+import org.bouncycastle.asn1.ASN1Boolean;
 import org.bouncycastle.asn1.ASN1Encodable;
 import org.bouncycastle.asn1.ASN1EncodableVector;
 import org.bouncycastle.asn1.ASN1ObjectIdentifier;
@@ -44,6 +45,7 @@ import org.bouncycastle.asn1.DERObjectIdentifier;
 import org.bouncycastle.asn1.DEROctetString;
 import org.bouncycastle.asn1.DERSequence;
 import org.bouncycastle.asn1.pkcs.CertificationRequest;
+import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x500.X500NameBuilder;
 import org.bouncycastle.asn1.x500.style.BCStyle;
@@ -79,6 +81,7 @@ import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder;
 import org.bouncycastle.util.encoders.Base64;
 import org.bouncycastle.asn1.x509.*;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateHolder;
 import sun.security.x509.InhibitAnyPolicyExtension;
 
 /**
@@ -463,37 +466,32 @@ public class MyCode extends x509.v3.CodeV3 {
             if (keyStore.containsAlias(name) && keyStore.containsAlias(aliasToSign)) {
                 //System.out.println(req.getSignature());
                 PrivateKey pkey = (PrivateKey) keyStore.getKey(name, null);
+                X509CertificateHolder certHolder = new JcaX509CertificateHolder((X509Certificate) keyStore.getCertificate(name));
+                X509Certificate toSign = (X509Certificate) keyStore.getCertificateChain(aliasToSign)[0];
+                X500Name issuer = certHolder.getSubject();
+                X500Name subject = req.getSubject();
 
-                X509Certificate cert = (X509Certificate) keyStore.getCertificateChain(name)[0];
-                AlgorithmIdentifier sigAlg = new DefaultSignatureAlgorithmIdentifierFinder().find(algorithm);
-                AlgorithmIdentifier digAlg = new DefaultDigestAlgorithmIdentifierFinder().find(sigAlg);
-                X500Name issuer = new X500Name(cert.getSubjectX500Principal().getName());
-                BigInteger serial = new BigInteger(32, new SecureRandom());
-                X509v3CertificateBuilder certgen = new X509v3CertificateBuilder(issuer, serial, cert.getNotBefore(),
-                        cert.getNotAfter(), req.getSubject(), req.getSubjectPublicKeyInfo());
+                X509v3CertificateBuilder certBuilder = new X509v3CertificateBuilder(issuer, toSign.getSerialNumber(), toSign.getNotBefore(),
+                        toSign.getNotAfter(), subject, req.getSubjectPublicKeyInfo());
 
-                ContentSigner signer = new BcRSAContentSignerBuilder(digAlg, digAlg).build(PrivateKeyFactory.createKey(pkey.getEncoded()));
+                AlgorithmIdentifier signAlg = new DefaultSignatureAlgorithmIdentifierFinder().find(algorithm);
+                AlgorithmIdentifier digestAlg = new DefaultDigestAlgorithmIdentifierFinder().find(signAlg);
 
-                X509CertificateHolder certHolder = certgen.build(signer);
-//                keyStore.deleteEntry(aliasToSign);
-                keyStore.setCertificateEntry(aliasToSign, new JcaX509CertificateConverter().setProvider("BC").getCertificate(certHolder));
-                /*byte[] certEncode = certHolder.toASN1Structure().getEncoded();
+                ContentSigner signer = new BcRSAContentSignerBuilder(signAlg, digestAlg).build(PrivateKeyFactory.createKey(pkey.getEncoded()));
+                X509CertificateHolder signedCertHolder = certBuilder.build(signer);
 
-                CMSSignedDataGenerator generator = new CMSSignedDataGenerator();
-                signer = new JcaContentSignerBuilder(algorithm).build(pkey);
-                generator.addSignerInfoGenerator(new JcaSignerInfoGeneratorBuilder(new JcaDigestCalculatorProviderBuilder().build()).build(signer, cert));
-                generator.addCertificate(new X509CertificateHolder(certEncode));
-                generator.addCertificate(new X509CertificateHolder(cert.getEncoded()));
+                X509Certificate signedCert = new JcaX509CertificateConverter().setProvider("BC").getCertificate(signedCertHolder);
 
-                CMSTypedData content = new CMSProcessableByteArray(certEncode);
-                CMSSignedData signeddata = generator.generate(content, true);
+                pkey = (PrivateKey) keyStore.getKey(aliasToSign, null);
+                keyStore.deleteEntry(aliasToSign);
+                keyStore.store(new FileOutputStream(new File(keyStorePath)), keyStorePassword.toCharArray());
 
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                out.write("-----BEGIN PKCS #7 SIGNED DATA-----\n".getBytes("ISO-8859-1"));
-                out.write(Base64.encode(signeddata.getEncoded()));
-                out.write("\n-----END PKCS #7 SIGNED DATA-----\n".getBytes("ISO-8859-1"));
-                out.close();
-                System.out.println(new String(out.toByteArray(), "ISO-8859-1"));*/
+                Certificate[] cert = new Certificate[1];
+                cert[0] = signedCert;
+
+                keyStore.setKeyEntry(aliasToSign, pkey, null, cert);
+                keyStore.store(new FileOutputStream(new File(keyStorePath)), keyStorePassword.toCharArray());
+
                 return true;
             }
         } catch (Exception e) {
@@ -587,12 +585,29 @@ public class MyCode extends x509.v3.CodeV3 {
                 aliasToSign = alias;
                 X509Certificate cert = (X509Certificate) keyStore.getCertificate(alias);
                 KeyPair pair = new KeyPair(cert.getPublicKey(), (PrivateKey) keyStore.getKey(alias, null));
+
+                ExtensionsGenerator extensions = new ExtensionsGenerator();
+
+                Set<String> critical = cert.getCriticalExtensionOIDs();
+                for (String tmp : critical) {
+                    byte[] data = cert.getExtensionValue(tmp);
+                    extensions.addExtension(new org.bouncycastle.asn1.x509.Extension(new ASN1ObjectIdentifier(tmp), true, Arrays.copyOfRange(data, 2, data.length)));
+                }
+
+                Set<String> noncritical = cert.getNonCriticalExtensionOIDs();
+                for (String tmp : noncritical) {
+                    byte[] data = cert.getExtensionValue(tmp);
+                    extensions.addExtension(new org.bouncycastle.asn1.x509.Extension(new ASN1ObjectIdentifier(tmp), false, Arrays.copyOfRange(data, 2, data.length)));
+                }
+
                 PKCS10CertificationRequestBuilder builder = new JcaPKCS10CertificationRequestBuilder(cert.getSubjectX500Principal(), pair.getPublic());
-                JcaContentSignerBuilder signerBuilder = new JcaContentSignerBuilder(cert.getSigAlgName());
-                ContentSigner signer = signerBuilder.build(pair.getPrivate());
-                req = builder.build(signer);
-                /*req = new PKCS10CertificationRequest(cert.getSigAlgName(),
-                        cert.getSubjectX500Principal(), pair.getPublic(), null, pair.getPrivate());*/
+
+                if (!extensions.isEmpty()) {
+                    builder.addAttribute(PKCSObjectIdentifiers.pkcs_9_at_extensionRequest, extensions.generate());
+                }
+
+                req = builder.build(new JcaContentSignerBuilder(cert.getSigAlgName()).build(pair.getPrivate()));
+
                 return true;
             }
             return false;
