@@ -15,11 +15,16 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Security;
+import java.security.cert.CertPath;
+import java.security.cert.CertPathValidator;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
+import java.security.cert.PKIXParameters;
+import java.security.cert.TrustAnchor;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Set;
@@ -132,11 +137,40 @@ public class MyCode extends x509.v3.CodeV3 {
         loadLocalKeystore();
     }
 
-    private boolean checkValidity(X509Certificate cert) {
+    private boolean checkValidity(Certificate[] certs) {
         try {
-            if (keyStore.isCertificateEntry(keyStore.getCertificateAlias(cert))) {
-                return true;
+            List<X509Certificate> list = new ArrayList();
+            for (int i = 0; i < certs.length; i++) {
+                list.add((X509Certificate) certs[i]);
             }
+
+            Enumeration e = keyStore.aliases();
+            boolean path_found = false;
+            
+            while (e.hasMoreElements()) {
+                String alias = (String) e.nextElement();
+                X509Certificate c = (X509Certificate) keyStore.getCertificate(alias);
+
+                if (c.getBasicConstraints() != -1) { // This one is CA
+                    CertificateFactory cf = CertificateFactory.getInstance("X.509");
+                    CertPath cp = cf.generateCertPath(Arrays.asList(list.get(0)));
+                    TrustAnchor trust = new TrustAnchor(c, null);
+                    CertPathValidator cpv = CertPathValidator.getInstance("PKIX");
+                    PKIXParameters params = new PKIXParameters(Collections.singleton(trust));
+                    params.setRevocationEnabled(false);
+
+                    try {
+                        cpv.validate(cp, params);
+                        path_found = true;
+                        break;
+                    } catch (Exception exc) {
+                        exc.printStackTrace();
+                        continue;
+                    }
+                }
+
+            }
+            return path_found;
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -144,8 +178,9 @@ public class MyCode extends x509.v3.CodeV3 {
         return false;
     }
 
-    private boolean isSigned(X509Certificate cert) {
+    private boolean isSigned(Certificate[] certs) {
         try {
+            X509Certificate cert = (X509Certificate) certs[0];
 
             if (cert.getBasicConstraints() != -1) {
                 return true;
@@ -174,8 +209,9 @@ public class MyCode extends x509.v3.CodeV3 {
                 } else {
                     cert = (X509Certificate) keyStore.getCertificateChain(alias)[0];
                 }
-                System.out.println(cert.getSigAlgName());
-                System.out.println(new DefaultAlgorithmNameFinder().getAlgorithmName(new ASN1ObjectIdentifier(cert.getSigAlgOID())));
+
+                //System.out.println(cert.getSigAlgName());
+                //System.out.println(new DefaultAlgorithmNameFinder().getAlgorithmName(new ASN1ObjectIdentifier(cert.getSigAlgOID())));
                 this.access.setNotAfter(cert.getNotAfter());
                 this.access.setNotBefore(cert.getNotBefore());
                 this.access.setSerialNumber(cert.getSerialNumber().toString());
@@ -228,13 +264,13 @@ public class MyCode extends x509.v3.CodeV3 {
                 Set<String> critical = cert.getCriticalExtensionOIDs();
 
                 // System.out.println(new String(cert.getExtensionValue("2.5.29.54")));
-                if (cert.getExtensionValue("2.5.29.18") != null) {
+                if (cert.getExtensionValue("2.5.29.18") != null) { // Subject Alternative Names
                     byte[] tmp = cert.getExtensionValue("2.5.29.18");
                     this.access.setAlternativeName(6, new String(tmp, 6, tmp.length - 6)); // Surmised from precise measurements
                     this.access.setCritical(6, critical.contains("2.5.29.18"));
                 }
 
-                if (cert.getExtensionValue("2.5.29.54") != null) {
+                if (cert.getExtensionValue("2.5.29.54") != null) { // Inhibit Any Policy
                     /*for(byte b : cert.getExtensionValue("2.5.29.54"))
                         System.out.println(b);*/
                     int tmp = cert.getExtensionValue("2.5.29.54")[4];
@@ -242,7 +278,7 @@ public class MyCode extends x509.v3.CodeV3 {
                     this.access.setCritical(13, critical.contains("2.5.29.54"));
                 }
 
-                if (cert.getExtensionValue("2.5.29.32") != null) {
+                if (cert.getExtensionValue("2.5.29.32") != null) { // Certificate Policies
                     //this.access.setAnyPolicy(true);
                     byte[] tmp = cert.getExtensionValue("2.5.29.32");
                     // 9 = 29 and 10 = 32 and 11 = 0 
@@ -258,10 +294,14 @@ public class MyCode extends x509.v3.CodeV3 {
                 }
 
                 //System.out.println(cert.getIssuerX500Principal().toString());
-                if (isSigned(cert)) {
-                    return checkValidity(cert) == true ? 2 : 1;
+                if (keyStore.isCertificateEntry(alias)) { // Always trust imported certificate. User knows what he's doing.
+                    return 2;
                 } else {
-                    return 0;
+                    if (isSigned(keyStore.getCertificateChain(alias))) {
+                        return checkValidity(keyStore.getCertificateChain(alias)) == true ? 2 : 1;
+                    } else {
+                        return 0;
+                    }
                 }
             }
             return -1;
@@ -314,16 +354,16 @@ public class MyCode extends x509.v3.CodeV3 {
                 }
             }
 
-            /*for(int i = 0; i < 15; i++)     //   3 = Certificate policies; 6 = Issuer Alternative Name 13 = Inhibit any Policy; The joy of no documentation :D
+            /*for(int i = 0; i < 15; i++)     //   3 = Certificate policies; 6 = Issuer Alternative Name 13 = Inhibit any Policy; The joys of no documentation :D
                 System.out.println(this.access.isCritical(i));*/
             GeneralNames names = gnbuilder.build();
-            if (this.access.getAlternativeName(6).length > 0) {
-                cert.addExtension(org.bouncycastle.asn1.x509.Extension.issuerAlternativeName, this.access.isCritical(6), names.getEncoded());
+            if (this.access.getAlternativeName(6).length > 0) { // Can't be critical, errors if it is
+                cert.addExtension(org.bouncycastle.asn1.x509.Extension.issuerAlternativeName, false, names.getEncoded());
             }
 
             if (!this.access.getSkipCerts().equals("")) {
-                cert.addExtension(org.bouncycastle.asn1.x509.Extension.inhibitAnyPolicy, this.access.isCritical(13), // Should always be true in inhibit any policy
-                        new DERInteger(new BigInteger(this.access.getSkipCerts())).getEncoded());
+                cert.addExtension(org.bouncycastle.asn1.x509.Extension.inhibitAnyPolicy, true, // Should always be critical in inhibit any policy
+                        new DERInteger(new BigInteger(this.access.getSkipCerts())).getEncoded()); // DERInteger... Who would have tought?
             }
 
             if (this.access.getAnyPolicy()) {
@@ -338,42 +378,6 @@ public class MyCode extends x509.v3.CodeV3 {
             e.printStackTrace();
             return null;
         }
-        /*try {
-            X500NameBuilder nameBuilder = new X500NameBuilder(X500Name.getDefaultStyle());
-            nameBuilder.addRDN(BCStyle.C, this.access.getSubjectCountry());
-            nameBuilder.addRDN(BCStyle.CN, this.access.getSubjectCommonName());
-            nameBuilder.addRDN(BCStyle.OU, this.access.getSubjectOrganizationUnit());
-            nameBuilder.addRDN(BCStyle.O, this.access.getSubjectOrganization());
-            nameBuilder.addRDN(BCStyle.L, this.access.getSubjectLocality());
-            nameBuilder.addRDN(BCStyle.ST, this.access.getSubjectState());
-
-            X509v3CertificateBuilder certBuilder = new X509v3CertificateBuilder(nameBuilder.build(),
-                    new BigInteger(this.access.getSerialNumber()), this.access.getNotBefore(), this.access.getNotAfter(),
-                    nameBuilder.build(), SubjectPublicKeyInfo.getInstance(ASN1Sequence.getInstance(keys.getPublic().getEncoded())));
-
-            System.out.println(this.access.getSkipCerts());
-            if (!this.access.getSkipCerts().equals("")) {
-                certBuilder.addExtension(new org.bouncycastle.asn1.x509.Extension(org.bouncycastle.asn1.x509.Extension.inhibitAnyPolicy, this.access.isCritical(13),
-                        new DERInteger(new BigInteger(this.access.getSkipCerts())).getEncoded()));
-            }
-            System.out.println(this.access.getAnyPolicy());
-            
-            //PolicyInformation pi = new PolicyInformation(new ASN1ObjectIdentifier("1.3.6.1.4.1.1466.115.121.1.26")); // onaj string 
-            PolicyInformation[] pi = new PolicyInformation[1];
-            PolicyQualifierInfo piq = new PolicyQualifierInfo(this.access.getCpsUri());
-            //pi[0] = new PolicyInformation(new ASN1ObjectIdentifier("1.3.6.1.4.1.1466.115.121.1.26"), new DERSequence(new PolicyQualifierInfo(this.access.getCpsUri())));
-            
-            certBuilder.addExtension(new org.bouncycastle.asn1.x509.Extension(org.bouncycastle.asn1.x509.Extension.certificatePolicies, this.access.isCritical(3),
-                    new CertificatePolicies(pi).getEncoded()));
-
-            //X509CertificateHolder certHolder = certBuilder.build(null)
-            System.out.println(this.access.getPublicKeySignatureAlgorithm());
-            return new JcaX509CertificateConverter().setProvider("BC").getCertificate(certBuilder.build(new JcaContentSignerBuilder(this.access.getPublicKeySignatureAlgorithm()).setProvider("BC")
-                    .build(keys.getPrivate())));
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-         */
     }
 
     @Override
@@ -383,8 +387,9 @@ public class MyCode extends x509.v3.CodeV3 {
             KeyPairGenerator gen = KeyPairGenerator.getInstance("ECDSA", "BC");
             gen.initialize(ecSpec, new SecureRandom());
             KeyPair keys = gen.generateKeyPair();
-            System.out.println(this.access.getPublicKeySignatureAlgorithm());
-            System.out.println(keys.getPrivate().toString());
+
+            //System.out.println(this.access.getPublicKeySignatureAlgorithm());
+            //System.out.println(keys.getPrivate().toString());
             Certificate[] cert = new Certificate[1];
             cert[0] = generateCertificate(keys);
             keyStore.setKeyEntry(name, keys.getPrivate(), null, cert);
@@ -414,15 +419,18 @@ public class MyCode extends x509.v3.CodeV3 {
             KeyStore p12 = KeyStore.getInstance("pkcs12");
             p12.load(new FileInputStream(path), password.toCharArray());
             Enumeration e = p12.aliases();
+
             while (e.hasMoreElements()) {
                 String alias = (String) e.nextElement();
                 X509Certificate c = (X509Certificate) p12.getCertificate(alias);
                 Principal subject = c.getSubjectDN();
                 String subjectArray[] = subject.toString().split(",");
+
                 for (String s : subjectArray) {
                     String[] str = s.trim().split("=");
-                    System.out.println(str[0] + " - " + str[1]);
+                    // System.out.println(str[0] + " - " + str[1]);
                 }
+
                 Certificate[] cert = new Certificate[1];
                 cert[0] = c;
                 keyStore.setKeyEntry(alias, p12.getKey(alias, password.toCharArray()), null, cert);
@@ -491,7 +499,6 @@ public class MyCode extends x509.v3.CodeV3 {
 
                 pkey = (PrivateKey) keyStore.getKey(aliasToSign, null);
                 keyStore.deleteEntry(aliasToSign);
-                //keyStore.store(new FileOutputStream(new File(keyStorePath)), keyStorePassword.toCharArray());
 
                 Certificate[] cert = new Certificate[1];
                 cert[0] = signedCert;
@@ -535,7 +542,7 @@ public class MyCode extends x509.v3.CodeV3 {
             Certificate cert = keyStore.getCertificateChain(aliasToExport)[0];
             if (i == 0) {  // export to DER
                 out.write(cert.getEncoded());
-            } else {
+            } else { // pem
                 out.write("-----BEGIN CERTIFICATE-----".getBytes());
                 out.write(java.util.Base64.getEncoder().withoutPadding().encode(cert.getEncoded()));
                 out.write("-----END CERTIFICATE-----".getBytes());
@@ -652,7 +659,7 @@ public class MyCode extends x509.v3.CodeV3 {
                 if (!extensions.isEmpty()) {
                     builder.addAttribute(PKCSObjectIdentifiers.pkcs_9_at_extensionRequest, extensions.generate());
                 }
-                System.out.println(cert.getSigAlgName());
+                //System.out.println(cert.getSigAlgName());
                 req = builder.build(new JcaContentSignerBuilder(new DefaultAlgorithmNameFinder().getAlgorithmName(new ASN1ObjectIdentifier(cert.getSigAlgOID()))).build(pair.getPrivate()));
 
                 return true;
